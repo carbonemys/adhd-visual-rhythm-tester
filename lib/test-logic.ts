@@ -20,6 +20,7 @@ export const initializeStaircase = (frequency: number): Staircase => ({
   correctCount: 0,
   lastDirection: null,
   isComplete: false,
+  noiseHistory: [TEST_CONFIG.initialNoise],
 });
 
 export const updateStaircase = (staircase: Staircase, isCorrect: boolean): Staircase => {
@@ -42,6 +43,7 @@ export const updateStaircase = (staircase: Staircase, isCorrect: boolean): Stair
   );
 
   newStaircase.noiseLevel = newNoiseLevel;
+  newStaircase.noiseHistory.push(newNoiseLevel);
 
   // Check for reversal only if the direction actually changed and we are not at the boundaries
   if (newStaircase.lastDirection && newStaircase.lastDirection !== direction) {

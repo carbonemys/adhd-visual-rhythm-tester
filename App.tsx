@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { ExperimentSettings, TrialState, AppMode, TestStatus, TestResult, Staircase } from './types';
+import { ExperimentSettings, TrialState, AppMode, TestStatus, TestResult, Staircase, StageAResult } from './types';
 import { WORD_LIST, DEFAULT_SETTINGS, STAGE_A_FREQUENCIES, TEST_CONFIG } from './constants';
 import { initializeStaircase, updateStaircase, calculateThreshold, createInterleavedQueue } from './lib/test-logic';
 import ControlsPanel from './components/ControlsPanel';
@@ -17,7 +17,7 @@ const App: React.FC = () => {
   
   const [mode, setMode] = useState<AppMode>('manual');
   const [testStatus, setTestStatus] = useState<TestStatus>(TestStatus.Idle);
-  const [testResults, setTestResults] = useState<{ stageA: TestResult[], stageB: TestResult[] }>({ stageA: [], stageB: [] });
+  const [testResults, setTestResults] = useState<{ stageA: StageAResult[], stageB: TestResult[] }>({ stageA: [], stageB: [] });
   const [currentTestTrial, setCurrentTestTrial] = useState<{ frequency: number; noiseLevel: number } | null>(null);
   const [testProgress, setTestProgress] = useState<{ current: number, total: number} | null>(null);
   const [stageStats, setStageStats] = useState({
@@ -25,6 +25,7 @@ const App: React.FC = () => {
     stageB: { correct: 0, total: 0 },
   });
   const [stageBSelection, setStageBSelection] = useState<number[]>([]);
+  const [stageBNoiseLevel, setStageBNoiseLevel] = useState<number | null>(null);
   
   const testController = useRef<{
     trialQueue: number[];
@@ -71,40 +72,43 @@ const App: React.FC = () => {
         // --- Stage A Complete, Setup Intermission ---
         const staircases = testController.current.staircases!;
         
-        const stageAThresholds = STAGE_A_FREQUENCIES.map(freq => ({
-            frequency: freq,
-            threshold: calculateThreshold(staircases.get(freq)!)
-        }));
-
-        const stageAResults = STAGE_A_FREQUENCIES.map(freq => {
+        const stageAResults: StageAResult[] = STAGE_A_FREQUENCIES.map(freq => {
             const sc = staircases.get(freq)!;
+            const threshold = calculateThreshold(sc);
+            const noiseMin = Math.min(...sc.noiseHistory);
+            const noiseMax = Math.max(...sc.noiseHistory);
             return {
                 frequency: freq,
                 accuracy: sc.trialCount > 0 ? sc.correctCount / sc.trialCount : 0,
+                threshold,
+                noiseMin,
+                noiseMax,
             };
         });
 
         setTestResults({ stageA: stageAResults, stageB: [] });
 
-        const bestFreq = stageAThresholds.reduce((prev, current) => (prev.threshold > current.threshold) ? prev : current).frequency;
+        const bestFreqResult = stageAResults.reduce((prev, current) => (prev.accuracy > current.accuracy) ? prev : current);
         
-        const totalThreshold = stageAThresholds.reduce((sum, result) => sum + result.threshold, 0);
-        const avgThreshold = stageAThresholds.length > 0 ? totalThreshold / stageAThresholds.length : TEST_CONFIG.initialNoise;
-        const stageBNoiseLevel = Math.max(TEST_CONFIG.noiseMin, Math.min(TEST_CONFIG.noiseMax, avgThreshold));
-        testController.current.stageBNoiseLevel = stageBNoiseLevel;
+        const totalThreshold = stageAResults.reduce((sum, result) => sum + result.threshold, 0);
+        const avgThreshold = stageAResults.length > 0 ? totalThreshold / stageAResults.length : TEST_CONFIG.initialNoise;
+        const finalStageBNoiseLevel = Math.max(TEST_CONFIG.noiseMin, Math.min(TEST_CONFIG.noiseMax, avgThreshold));
+        
+        setStageBNoiseLevel(finalStageBNoiseLevel);
+        testController.current.stageBNoiseLevel = finalStageBNoiseLevel;
 
         const suggestedFrequencies = new Set<number>();
         for (let i = -TEST_CONFIG.stageBPoints; i <= TEST_CONFIG.stageBPoints; i++) {
-          const newFreq = bestFreq + i;
+          const newFreq = bestFreqResult.frequency + i;
           if (newFreq > 0 && newFreq <= 30) suggestedFrequencies.add(newFreq);
         }
         // Ensure we have 5 frequencies
-        let freqToAdd = bestFreq + TEST_CONFIG.stageBPoints + 1;
+        let freqToAdd = bestFreqResult.frequency + TEST_CONFIG.stageBPoints + 1;
         while(suggestedFrequencies.size < 5 && freqToAdd <= 30) {
             suggestedFrequencies.add(freqToAdd);
             freqToAdd++;
         }
-        freqToAdd = bestFreq - TEST_CONFIG.stageBPoints - 1;
+        freqToAdd = bestFreqResult.frequency - TEST_CONFIG.stageBPoints - 1;
         while(suggestedFrequencies.size < 5 && freqToAdd > 0) {
             suggestedFrequencies.add(freqToAdd);
             freqToAdd--;
@@ -214,6 +218,29 @@ const App: React.FC = () => {
     setTrialState(TrialState.Idle);
     setTestStatus(TestStatus.StageB);
   };
+  
+  const startCustomStageB = (noise: number, frequencies: number[]) => {
+    if (frequencies.length !== 5) return;
+
+    setTestStatus(TestStatus.Idle);
+    setTestResults({ stageA: [], stageB: [] });
+    setStageStats({ stageA: { correct: 0, total: 0 }, stageB: { correct: 0, total: 0 } });
+
+    const newQueue = createInterleavedQueue(frequencies);
+    const accuracyTracker = new Map<number, { correct: number; total: number}>();
+    frequencies.forEach(freq => accuracyTracker.set(freq, { correct: 0, total: 0}));
+
+    testController.current = {
+        trialQueue: newQueue,
+        accuracyTracker,
+        stageBNoiseLevel: noise,
+    };
+    
+    setStageBNoiseLevel(noise);
+    setTestProgress({ current: 0, total: newQueue.length });
+    setTrialState(TrialState.Idle);
+    setTestStatus(TestStatus.StageB);
+  };
 
 
   const handleGuessSubmit = (e: React.FormEvent) => {
@@ -274,6 +301,8 @@ const App: React.FC = () => {
                   stageBSelection={stageBSelection}
                   setStageBSelection={setStageBSelection}
                   onStartStageB={startStageB}
+                  stageBNoiseLevel={stageBNoiseLevel}
+                  onStartCustomStageB={startCustomStageB}
                 />
             }
           </div>

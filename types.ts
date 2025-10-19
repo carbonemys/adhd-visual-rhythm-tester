@@ -31,9 +31,18 @@ export interface Staircase {
   correctCount: number;
   lastDirection: 'up' | 'down' | null;
   isComplete: boolean;
+  noiseHistory: number[];
 }
 
 export interface TestResult {
   frequency: number;
   accuracy: number; 
+}
+
+export interface StageAResult {
+  frequency: number;
+  accuracy: number;
+  threshold: number;
+  noiseMin: number;
+  noiseMax: number;
 }
