@@ -24,12 +24,11 @@ const App: React.FC = () => {
     stageA: { correct: 0, total: 0 },
     stageB: { correct: 0, total: 0 },
   });
+  const [stageBSelection, setStageBSelection] = useState<number[]>([]);
   
   const testController = useRef<{
     trialQueue: number[];
-    // Stage A specific
     staircases?: Map<number, Staircase>;
-    // Stage B specific
     stageBNoiseLevel?: number;
     accuracyTracker?: Map<number, { correct: number, total: number }>;
   } | null>(null);
@@ -69,7 +68,7 @@ const App: React.FC = () => {
 
     if (trialQueue.length === 0) {
       if (testStatus === TestStatus.StageA) {
-        // --- Stage A Complete, Setup Stage B ---
+        // --- Stage A Complete, Setup Intermission ---
         const staircases = testController.current.staircases!;
         
         const stageAThresholds = STAGE_A_FREQUENCIES.map(freq => ({
@@ -92,26 +91,27 @@ const App: React.FC = () => {
         const totalThreshold = stageAThresholds.reduce((sum, result) => sum + result.threshold, 0);
         const avgThreshold = stageAThresholds.length > 0 ? totalThreshold / stageAThresholds.length : TEST_CONFIG.initialNoise;
         const stageBNoiseLevel = Math.max(TEST_CONFIG.noiseMin, Math.min(TEST_CONFIG.noiseMax, avgThreshold));
+        testController.current.stageBNoiseLevel = stageBNoiseLevel;
 
-        const stageBFrequencies: number[] = [];
-        const freqSet = new Set<number>();
+        const suggestedFrequencies = new Set<number>();
         for (let i = -TEST_CONFIG.stageBPoints; i <= TEST_CONFIG.stageBPoints; i++) {
           const newFreq = bestFreq + i;
-          if (newFreq > 0) freqSet.add(newFreq);
+          if (newFreq > 0 && newFreq <= 30) suggestedFrequencies.add(newFreq);
         }
-        freqSet.forEach(f => stageBFrequencies.push(f));
+        // Ensure we have 5 frequencies
+        let freqToAdd = bestFreq + TEST_CONFIG.stageBPoints + 1;
+        while(suggestedFrequencies.size < 5 && freqToAdd <= 30) {
+            suggestedFrequencies.add(freqToAdd);
+            freqToAdd++;
+        }
+        freqToAdd = bestFreq - TEST_CONFIG.stageBPoints - 1;
+        while(suggestedFrequencies.size < 5 && freqToAdd > 0) {
+            suggestedFrequencies.add(freqToAdd);
+            freqToAdd--;
+        }
 
-        const newQueue = createInterleavedQueue(stageBFrequencies);
-        const accuracyTracker = new Map<number, { correct: number; total: number }>();
-        stageBFrequencies.forEach(freq => accuracyTracker.set(freq, { correct: 0, total: 0 }));
-
-        testController.current = { 
-          trialQueue: newQueue,
-          stageBNoiseLevel,
-          accuracyTracker
-        };
-        setTestStatus(TestStatus.StageB); // This triggers the useEffect to start Stage B
-        setTestProgress({ current: 0, total: newQueue.length });
+        setStageBSelection(Array.from(suggestedFrequencies).sort((a,b) => a - b));
+        setTestStatus(TestStatus.Intermission);
         
       } else {
         // --- Stage B Complete, Finalize Test ---
@@ -155,10 +155,10 @@ const App: React.FC = () => {
 
   useEffect(() => {
     // This effect starts the test or the next phase of the test whenever the status changes.
-    if ((testStatus === TestStatus.StageA || testStatus === TestStatus.StageB) && testController.current?.trialQueue.length > 0) {
+    if ((testStatus === TestStatus.StageA || testStatus === TestStatus.StageB) && trialState === TrialState.Idle) {
         advanceTest();
     }
-  }, [testStatus]);
+  }, [testStatus, trialState]);
 
   const processTestResult = (isCorrect: boolean) => {
     if (!currentTestTrial) return;
@@ -179,7 +179,7 @@ const App: React.FC = () => {
             tracker.total += 1;
         }
     }
-    advanceTest();
+    setTrialState(TrialState.Idle); // This will trigger the useEffect to advance
   };
 
   const startTest = () => {
@@ -193,8 +193,26 @@ const App: React.FC = () => {
 
     testController.current = { staircases, trialQueue: queue };
     setTestProgress({ current: 0, total: queue.length });
-    // Setting status will trigger the useEffect to call advanceTest
+    setTrialState(TrialState.Idle);
     setTestStatus(TestStatus.StageA);
+  };
+
+  const startStageB = () => {
+    if (stageBSelection.length !== 5) return;
+    
+    const newQueue = createInterleavedQueue(stageBSelection);
+    const accuracyTracker = new Map<number, { correct: number; total: number}>();
+    stageBSelection.forEach(freq => accuracyTracker.set(freq, { correct: 0, total: 0}));
+
+    testController.current = {
+        ...testController.current!,
+        trialQueue: newQueue,
+        accuracyTracker,
+    };
+    
+    setTestProgress({ current: 0, total: newQueue.length });
+    setTrialState(TrialState.Idle);
+    setTestStatus(TestStatus.StageB);
   };
 
 
@@ -247,7 +265,16 @@ const App: React.FC = () => {
           <div className="lg:col-span-1 bg-gray-800 p-6 rounded-lg shadow-2xl">
             {mode === 'manual' 
               ? <ControlsPanel settings={settings} onSettingsChange={setSettings} />
-              : <TestPanel status={testStatus} results={testResults} onStart={startTest} progress={testProgress} stats={stageStats}/>
+              : <TestPanel 
+                  status={testStatus} 
+                  results={testResults} 
+                  onStart={startTest} 
+                  progress={testProgress} 
+                  stats={stageStats}
+                  stageBSelection={stageBSelection}
+                  setStageBSelection={setStageBSelection}
+                  onStartStageB={startStageB}
+                />
             }
           </div>
 

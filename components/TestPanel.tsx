@@ -11,6 +11,9 @@ interface TestPanelProps {
     stageA: { correct: number; total: number };
     stageB: { correct: number; total: number };
   };
+  stageBSelection: number[];
+  setStageBSelection: (selection: number[]) => void;
+  onStartStageB: () => void;
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -30,10 +33,10 @@ const ResultsChart: React.FC<{data: TestResult[], title: string}> = ({ data, tit
         <h3 className="text-lg font-semibold text-center text-gray-300 mb-2">{title}</h3>
         <div className="h-60 bg-gray-900 p-2 rounded-md">
             <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data} margin={{ top: 5, right: 5, left: -25, bottom: 20 }}>
+                <BarChart data={[...data].sort((a,b) => a.frequency - b.frequency)} margin={{ top: 5, right: 5, left: -25, bottom: 20 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                 <XAxis dataKey="frequency" stroke="#9ca3af" tick={{ fontSize: 12 }} unit=" Hz">
-                    <Label value="Frequency" offset={-15} position="insideBottom" fill="#9ca3af" />
+                    <Label value="Frequency (Hz)" offset={-15} position="insideBottom" fill="#9ca3af" />
                 </XAxis>
                 <YAxis stroke="#9ca3af" tick={{ fontSize: 12 }} domain={[0, 1]} tickFormatter={(val) => `${Math.round(val * 100)}%`}>
                     <Label value="Accuracy" angle={-90} offset={10} position="insideLeft" style={{ textAnchor: 'middle', fill: '#9ca3af' }} />
@@ -46,7 +49,40 @@ const ResultsChart: React.FC<{data: TestResult[], title: string}> = ({ data, tit
     </div>
 );
 
-const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progress, stats }) => {
+const FrequencySelector: React.FC<{
+    selected: number[];
+    onToggle: (freq: number) => void;
+    limit: number;
+}> = ({ selected, onToggle, limit }) => {
+    const allFrequencies = Array.from({ length: 30 }, (_, i) => i + 1);
+
+    return (
+        <div className="grid grid-cols-6 gap-2 mt-4">
+            {allFrequencies.map(freq => {
+                const isSelected = selected.includes(freq);
+                const isDisabled = !isSelected && selected.length >= limit;
+                return (
+                    <button
+                        key={freq}
+                        onClick={() => onToggle(freq)}
+                        disabled={isDisabled}
+                        className={`py-1 text-sm font-mono rounded transition duration-150 border-2 ${
+                            isSelected 
+                                ? 'bg-cyan-500 border-cyan-400 text-white' 
+                                : isDisabled 
+                                ? 'bg-gray-700 border-gray-600 text-gray-500 cursor-not-allowed'
+                                : 'bg-gray-600 border-gray-500 text-gray-200 hover:bg-gray-500 hover:border-gray-400'
+                        }`}
+                    >
+                        {freq}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
+const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progress, stats, stageBSelection, setStageBSelection, onStartStageB }) => {
   if (status === TestStatus.Idle) {
     return (
       <div className="text-center">
@@ -54,7 +90,7 @@ const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progres
         <p className="text-gray-300 mb-6">This automated test will find the frequency where your visual processing is sharpest.</p>
         <button
           onClick={onStart}
-          className="px-8 py-4 text-xl font-bold text-white bg-cyan-600 rounded-md hover:bg-cyan-700 transition duration-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+          className="w-full px-8 py-4 text-xl font-bold text-white bg-cyan-600 rounded-md hover:bg-cyan-700 transition duration-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800"
         >
           Start Test
         </button>
@@ -77,9 +113,35 @@ const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progres
     );
   }
 
+  if (status === TestStatus.Intermission) {
+    const handleSelectionToggle = (freq: number) => {
+        const isSelected = stageBSelection.includes(freq);
+        if (isSelected) {
+            setStageBSelection(stageBSelection.filter(f => f !== freq));
+        } else if (stageBSelection.length < 5) {
+            setStageBSelection([...stageBSelection, freq].sort((a, b) => a - b));
+        }
+    };
+    return (
+        <div>
+            <h2 className="text-2xl font-bold text-cyan-400 mb-2 text-center">Stage A Complete</h2>
+            <p className="text-center text-gray-300 mb-4">Select 5 frequencies for the fine-tuning stage. We've suggested a starting set based on your results.</p>
+            <ResultsChart data={results.stageA} title="Stage A: Coarse Tuning Results" />
+            <FrequencySelector selected={stageBSelection} onToggle={handleSelectionToggle} limit={5} />
+            <button
+                onClick={onStartStageB}
+                disabled={stageBSelection.length !== 5}
+                className="w-full mt-6 px-8 py-3 text-lg font-bold text-white bg-cyan-600 rounded-md hover:bg-cyan-700 transition duration-200 disabled:bg-gray-600 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+            >
+                {`Start Stage B (${stageBSelection.length}/5)`}
+            </button>
+        </div>
+    );
+  }
+
   if (status === TestStatus.Complete) {
-    const stageAResults = [...results.stageA].sort((a, b) => a.frequency - b.frequency);
-    const stageBResults = [...results.stageB].sort((a, b) => a.frequency - b.frequency);
+    const stageAResults = results.stageA;
+    const stageBResults = results.stageB;
     const peak = stageBResults.length > 0 ? stageBResults.reduce((max, current) => current.accuracy > max.accuracy ? current : max, stageBResults[0]) : null;
     const stageAAccuracy = stats.stageA.total > 0 ? (stats.stageA.correct / stats.stageA.total * 100).toFixed(1) : 0;
     const stageBAccuracy = stats.stageB.total > 0 ? (stats.stageB.correct / stats.stageB.total * 100).toFixed(1) : 0;
@@ -96,6 +158,12 @@ const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progres
 
         <ResultsChart data={stageAResults} title="Stage A: Coarse Tuning" />
         <ResultsChart data={stageBResults} title="Stage B: Fine Tuning" />
+        <button
+          onClick={onStart}
+          className="w-full mt-4 px-8 py-3 text-lg font-bold text-white bg-cyan-600 rounded-md hover:bg-cyan-700 transition duration-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+        >
+          Run Test Again
+        </button>
       </div>
     );
   }

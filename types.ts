@@ -16,6 +16,7 @@ export type AppMode = 'manual' | 'test';
 export enum TestStatus {
   Idle = 'idle',
   StageA = 'stage_a',
+  Intermission = 'intermission',
   StageB = 'stage_b',
   Complete = 'complete',
 }
