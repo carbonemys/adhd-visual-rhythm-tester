@@ -162,12 +162,12 @@ const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progres
                         <label className="block text-sm font-medium text-gray-300 mb-1">Fixed Noise Level</label>
                         <div className="flex items-center space-x-3">
                         <input
-                            type="range" min={TEST_CONFIG.noiseMin} max={TEST_CONFIG.noiseMax} step="0.005"
+                            type="range" min={TEST_CONFIG.noiseMin} max={TEST_CONFIG.noiseMax} step="0.001"
                             value={customNoise}
                             onChange={(e) => setCustomNoise(parseFloat(e.target.value))}
                             className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
                         />
-                        <span className="text-cyan-400 font-mono w-24 text-right">{(customNoise * 100).toFixed(1)}%</span>
+                        <span className="text-cyan-400 font-mono w-24 text-right">{(customNoise * 100).toFixed(2)}%</span>
                         </div>
                     </div>
                     
