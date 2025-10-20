@@ -1,4 +1,4 @@
-import { ExperimentSettings } from './types';
+import { ExperimentSettings, StimulusConfig } from './types';
 
 export const WORD_LIST: string[] = [
   'BRAIN', 'PULSE', 'FOCUS', 'QUICK', 'VISON', 'IMAGE', 'FRAME', 'NOISE', 
@@ -41,7 +41,8 @@ export const DEFAULT_SETTINGS: ExperimentSettings = {
 export const CANVAS_WIDTH = 500;
 export const CANVAS_HEIGHT = 200;
 
-export const STAGE_A_FREQUENCIES = [3, 5, 7, 10, 12, 15, 20];
+// Dropped <5 Hz as they are unreliable within a 200ms window
+export const STAGE_A_FREQUENCIES = [5, 7, 10, 12, 15, 20];
 
 export const TEST_CONFIG = {
   duration: 200,
@@ -51,8 +52,19 @@ export const TEST_CONFIG = {
   noiseMin: 0.90,
   noiseMax: 1.00,
   reversalsToReduceStep: 2,
-  maxReversals: 4, // Reduced from 6
-  trialsPerFreq: 6, // Reduced from 16
+  maxReversals: 8,
+  trialsPerFreqStageA: 15,
+  trialsPerFreqStageB: 20,
   stageBPoints: 2, // Test peak ± this many points
-  reversalsForThreshold: 4, // Average the last N reversals
+  reversalsForThreshold: 6, // Average the last N reversals
+  pinThreshold: 8, // consecutive trials at a boundary to be considered "pinned"
+};
+
+export const DEFAULT_STIMULUS_CONFIG: StimulusConfig = {
+    durationMs: TEST_CONFIG.duration,
+    frequency: 10,
+    refreshRate: 60, // Default, will be updated by detection
+    noiseLevel: TEST_CONFIG.initialNoise,
+    stimulusMode: 'singleSine',
+    randomizePhase: true,
 };

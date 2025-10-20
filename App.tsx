@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { ExperimentSettings, TrialState, AppMode, TestStatus, TestResult, Staircase, StageAResult } from './types';
-import { WORD_LIST, DEFAULT_SETTINGS, STAGE_A_FREQUENCIES, TEST_CONFIG } from './constants';
+import { ExperimentSettings, TrialState, AppMode, TestStatus, TestResult, Staircase, StageAResult, Envelope, TrialLogEntry, StimulusConfig } from './types';
+import { WORD_LIST, DEFAULT_SETTINGS, STAGE_A_FREQUENCIES, TEST_CONFIG, DEFAULT_STIMULUS_CONFIG } from './constants';
 import { initializeStaircase, updateStaircase, calculateThreshold, createInterleavedQueue } from './lib/test-logic';
+import { detectRefreshRate, generateEnvelope } from './lib/stimulus-logic';
+import { exportToCsv, exportToJson } from './lib/export-logic';
 import ControlsPanel from './components/ControlsPanel';
 import ExperimentCanvas from './components/ExperimentCanvas';
 import TestPanel from './components/TestPanel';
-
 
 const App: React.FC = () => {
   const [settings, setSettings] = useState<ExperimentSettings>(DEFAULT_SETTINGS);
@@ -20,12 +21,16 @@ const App: React.FC = () => {
   const [testResults, setTestResults] = useState<{ stageA: StageAResult[], stageB: TestResult[] }>({ stageA: [], stageB: [] });
   const [currentTestTrial, setCurrentTestTrial] = useState<{ frequency: number; noiseLevel: number } | null>(null);
   const [testProgress, setTestProgress] = useState<{ current: number, total: number} | null>(null);
-  const [stageStats, setStageStats] = useState({
-    stageA: { correct: 0, total: 0 },
-    stageB: { correct: 0, total: 0 },
-  });
+  const [stageStats, setStageStats] = useState({ stageA: { correct: 0, total: 0 }, stageB: { correct: 0, total: 0 } });
   const [stageBSelection, setStageBSelection] = useState<number[]>([]);
   const [stageBNoiseLevel, setStageBNoiseLevel] = useState<number | null>(null);
+
+  const [refreshRate, setRefreshRate] = useState(60);
+  const [isDebug, setIsDebug] = useState(false);
+  const [trialLog, setTrialLog] = useState<TrialLogEntry[]>([]);
+  const [currentEnvelope, setCurrentEnvelope] = useState<Envelope | null>(null);
+
+  const trialStartTimeRef = useRef<number | null>(null);
   
   const testController = useRef<{
     trialQueue: number[];
@@ -38,19 +43,35 @@ const App: React.FC = () => {
   const feedbackTimeoutId = useRef<number | null>(null);
 
   useEffect(() => {
+    detectRefreshRate().then(rate => setRefreshRate(rate));
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('debug') === 'true') {
+      setIsDebug(true);
+    }
     return () => { if (feedbackTimeoutId.current) clearTimeout(feedbackTimeoutId.current); };
   }, []);
 
-  const startManualTrial = useCallback(() => {
-    if (trialState === TrialState.Running) return;
+  const prepareAndRunTrial = useCallback((stimulusConfig: StimulusConfig) => {
+    if (trialState !== TrialState.Idle && trialState !== TrialState.Feedback) return;
     if (feedbackTimeoutId.current) clearTimeout(feedbackTimeoutId.current);
-
+    
+    setTrialState(TrialState.PreTrial);
     const nextWord = WORD_LIST[Math.floor(Math.random() * WORD_LIST.length)];
     setCurrentWord(nextWord);
-    setTrialState(TrialState.Running);
+    
+    const envelope = generateEnvelope(stimulusConfig);
+    setCurrentEnvelope(envelope);
+    
     setFeedback(null);
     setUserGuess('');
+    
+    // Short delay to ensure state updates before running
+    setTimeout(() => {
+      setTrialState(TrialState.Running);
+      trialStartTimeRef.current = performance.now();
+    }, 50);
   }, [trialState]);
+
 
   const onTrialComplete = useCallback(() => {
     setTrialState(TrialState.AwaitingInput);
@@ -75,46 +96,39 @@ const App: React.FC = () => {
         const stageAResults: StageAResult[] = STAGE_A_FREQUENCIES.map(freq => {
             const sc = staircases.get(freq)!;
             const threshold = calculateThreshold(sc);
-            const noiseMin = Math.min(...sc.noiseHistory);
-            const noiseMax = Math.max(...sc.noiseHistory);
+            const noiseMin = sc.noiseHistory.length > 0 ? Math.min(...sc.noiseHistory) : 0;
+            const noiseMax = sc.noiseHistory.length > 0 ? Math.max(...sc.noiseHistory) : 0;
             return {
                 frequency: freq,
                 accuracy: sc.trialCount > 0 ? sc.correctCount / sc.trialCount : 0,
                 threshold,
                 noiseMin,
                 noiseMax,
+                wasPinned: sc.isPinned,
             };
         });
 
         setTestResults({ stageA: stageAResults, stageB: [] });
-
-        const bestFreqResult = stageAResults.reduce((prev, current) => (prev.accuracy > current.accuracy) ? prev : current);
         
-        const totalThreshold = stageAResults.reduce((sum, result) => sum + result.threshold, 0);
-        const avgThreshold = stageAResults.length > 0 ? totalThreshold / stageAResults.length : TEST_CONFIG.initialNoise;
+        const validThresholds = stageAResults.filter(r => !r.wasPinned).map(r => r.threshold);
+        const totalThreshold = validThresholds.reduce((sum, threshold) => sum + threshold, 0);
+        const avgThreshold = validThresholds.length > 0 ? totalThreshold / validThresholds.length : TEST_CONFIG.initialNoise;
         const finalStageBNoiseLevel = Math.max(TEST_CONFIG.noiseMin, Math.min(TEST_CONFIG.noiseMax, avgThreshold));
         
         setStageBNoiseLevel(finalStageBNoiseLevel);
         testController.current.stageBNoiseLevel = finalStageBNoiseLevel;
 
-        const suggestedFrequencies = new Set<number>();
-        for (let i = -TEST_CONFIG.stageBPoints; i <= TEST_CONFIG.stageBPoints; i++) {
-          const newFreq = bestFreqResult.frequency + i;
-          if (newFreq > 0 && newFreq <= 30) suggestedFrequencies.add(newFreq);
-        }
-        // Ensure we have 5 frequencies
-        let freqToAdd = bestFreqResult.frequency + TEST_CONFIG.stageBPoints + 1;
-        while(suggestedFrequencies.size < 5 && freqToAdd <= 30) {
-            suggestedFrequencies.add(freqToAdd);
-            freqToAdd++;
-        }
-        freqToAdd = bestFreqResult.frequency - TEST_CONFIG.stageBPoints - 1;
-        while(suggestedFrequencies.size < 5 && freqToAdd > 0) {
-            suggestedFrequencies.add(freqToAdd);
-            freqToAdd--;
+        const sortedByThreshold = [...stageAResults].sort((a, b) => a.threshold - b.threshold);
+        const bestFreq = sortedByThreshold[0].frequency;
+        
+        const selection = new Set<number>();
+        selection.add(bestFreq);
+        for(let i = 1; selection.size < 5; i++){
+            if(bestFreq - i > 0) selection.add(bestFreq - i);
+            if(selection.size < 5 && bestFreq + i <= 30) selection.add(bestFreq + i);
         }
 
-        setStageBSelection(Array.from(suggestedFrequencies).sort((a,b) => a - b));
+        setStageBSelection(Array.from(selection).sort((a,b) => a - b));
         setTestStatus(TestStatus.Intermission);
         
       } else {
@@ -150,24 +164,39 @@ const App: React.FC = () => {
     setTestProgress(prev => prev ? { ...prev, current: prev.current + 1 } : null);
 
     setCurrentTestTrial({ frequency: nextFreq, noiseLevel });
-    const nextWord = WORD_LIST[Math.floor(Math.random() * WORD_LIST.length)];
-    setCurrentWord(nextWord);
-    setTrialState(TrialState.Running);
-    setFeedback(null);
-    setUserGuess('');
-  }, [testStatus]);
+    prepareAndRunTrial({ ...DEFAULT_STIMULUS_CONFIG, frequency: nextFreq, noiseLevel, refreshRate });
+
+  }, [testStatus, refreshRate, prepareAndRunTrial]);
 
   useEffect(() => {
-    // This effect starts the test or the next phase of the test whenever the status changes.
-    if ((testStatus === TestStatus.StageA || testStatus === TestStatus.StageB) && trialState === TrialState.Idle) {
+    if ((testStatus === TestStatus.StageA || testStatus === TestStatus.StageB) && (trialState === TrialState.Idle || trialState === TrialState.Feedback)) {
         advanceTest();
     }
-  }, [testStatus, trialState]);
+  }, [testStatus, trialState, advanceTest]);
 
   const processTestResult = (isCorrect: boolean) => {
-    if (!currentTestTrial) return;
-    const { frequency } = currentTestTrial;
+    if (!currentTestTrial || !currentEnvelope) return;
 
+    const rt = trialStartTimeRef.current ? performance.now() - trialStartTimeRef.current : null;
+    const logEntry: TrialLogEntry = {
+        trialNumber: trialLog.length + 1,
+        stage: testStatus,
+        word: currentWord,
+        guess: userGuess.trim().toUpperCase(),
+        isCorrect,
+        rt,
+        frequency: currentTestTrial.frequency,
+        phase: currentEnvelope.phase,
+        noiseBase: currentTestTrial.noiseLevel,
+        envelopeMean: currentEnvelope.mean,
+        envelopeRms: currentEnvelope.rms,
+        envelopeIntegral: currentEnvelope.integral,
+        frameCount: currentEnvelope.values.length,
+        detectedRefreshRate: refreshRate,
+    };
+    setTrialLog(prevLog => [...prevLog, logEntry]);
+
+    const { frequency } = currentTestTrial;
     if (testStatus === TestStatus.StageA) {
         setStageStats(s => ({ ...s, stageA: { correct: s.stageA.correct + (isCorrect ? 1 : 0), total: s.stageA.total + 1 } }));
         const staircase = testController.current?.staircases?.get(frequency);
@@ -183,28 +212,48 @@ const App: React.FC = () => {
             tracker.total += 1;
         }
     }
-    setTrialState(TrialState.Idle); // This will trigger the useEffect to advance
+    setTrialState(TrialState.Feedback);
+    feedbackTimeoutId.current = window.setTimeout(() => setTrialState(TrialState.Idle), 500);
   };
 
-  const startTest = () => {
-    setTestStatus(TestStatus.Idle); // Reset status first
+  const startTest = (isStageBOnly = false, customConfig: {noise: number, frequencies: number[]} | null = null) => {
+    setTestStatus(TestStatus.Idle);
     setTestResults({ stageA: [], stageB: [] });
     setStageStats({ stageA: { correct: 0, total: 0 }, stageB: { correct: 0, total: 0 } });
-    
-    const queue = createInterleavedQueue(STAGE_A_FREQUENCIES);
-    const staircases = new Map<number, Staircase>();
-    STAGE_A_FREQUENCIES.forEach(freq => staircases.set(freq, initializeStaircase(freq)));
+    setTrialLog([]);
 
-    testController.current = { staircases, trialQueue: queue };
-    setTestProgress({ current: 0, total: queue.length });
-    setTrialState(TrialState.Idle);
-    setTestStatus(TestStatus.StageA);
+    if (isStageBOnly && customConfig) {
+        const { noise, frequencies } = customConfig;
+        const newQueue = createInterleavedQueue(frequencies, TEST_CONFIG.trialsPerFreqStageB);
+        const accuracyTracker = new Map<number, { correct: number; total: number}>();
+        frequencies.forEach(freq => accuracyTracker.set(freq, { correct: 0, total: 0}));
+
+        testController.current = {
+            trialQueue: newQueue,
+            accuracyTracker,
+            stageBNoiseLevel: noise,
+        };
+        
+        setStageBNoiseLevel(noise);
+        setTestProgress({ current: 0, total: newQueue.length });
+        setTrialState(TrialState.Idle);
+        setTestStatus(TestStatus.StageB);
+    } else {
+        const queue = createInterleavedQueue(STAGE_A_FREQUENCIES, TEST_CONFIG.trialsPerFreqStageA);
+        const staircases = new Map<number, Staircase>();
+        STAGE_A_FREQUENCIES.forEach(freq => staircases.set(freq, initializeStaircase(freq)));
+
+        testController.current = { staircases, trialQueue: queue };
+        setTestProgress({ current: 0, total: queue.length });
+        setTrialState(TrialState.Idle);
+        setTestStatus(TestStatus.StageA);
+    }
   };
 
   const startStageB = () => {
-    if (stageBSelection.length !== 5) return;
+    if (stageBSelection.length < 5) return;
     
-    const newQueue = createInterleavedQueue(stageBSelection);
+    const newQueue = createInterleavedQueue(stageBSelection, TEST_CONFIG.trialsPerFreqStageB);
     const accuracyTracker = new Map<number, { correct: number; total: number}>();
     stageBSelection.forEach(freq => accuracyTracker.set(freq, { correct: 0, total: 0}));
 
@@ -218,30 +267,6 @@ const App: React.FC = () => {
     setTrialState(TrialState.Idle);
     setTestStatus(TestStatus.StageB);
   };
-  
-  const startCustomStageB = (noise: number, frequencies: number[]) => {
-    if (frequencies.length !== 5) return;
-
-    setTestStatus(TestStatus.Idle);
-    setTestResults({ stageA: [], stageB: [] });
-    setStageStats({ stageA: { correct: 0, total: 0 }, stageB: { correct: 0, total: 0 } });
-
-    const newQueue = createInterleavedQueue(frequencies);
-    const accuracyTracker = new Map<number, { correct: number; total: number}>();
-    frequencies.forEach(freq => accuracyTracker.set(freq, { correct: 0, total: 0}));
-
-    testController.current = {
-        trialQueue: newQueue,
-        accuracyTracker,
-        stageBNoiseLevel: noise,
-    };
-    
-    setStageBNoiseLevel(noise);
-    setTestProgress({ current: 0, total: newQueue.length });
-    setTrialState(TrialState.Idle);
-    setTestStatus(TestStatus.StageB);
-  };
-
 
   const handleGuessSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -259,28 +284,28 @@ const App: React.FC = () => {
       feedbackTimeoutId.current = window.setTimeout(() => setTrialState(TrialState.Idle), 2000);
     } else { // test mode
       setFeedback({ message: isCorrect ? 'Correct!' : 'Incorrect', color: isCorrect ? 'text-green-400' : 'text-red-400' });
-      setTimeout(() => processTestResult(isCorrect), 500);
+      processTestResult(isCorrect);
     }
   };
   
   const handleDontKnow = () => {
     if (trialState !== TrialState.AwaitingInput) return;
-    
     if (mode === 'manual') {
       setScore(prev => ({ correct: prev.correct, total: prev.total + 1 }));
       setFeedback({ message: `The word was: ${currentWord}`, color: 'text-yellow-500' });
       setTrialState(TrialState.Feedback);
       feedbackTimeoutId.current = window.setTimeout(() => setTrialState(TrialState.Idle), 2000);
-    } else { // test mode
+    } else {
        setFeedback({ message: 'Incorrect', color: 'text-red-400' });
-       setTimeout(() => processTestResult(false), 500);
+       processTestResult(false);
     }
   };
-  
-  const settingsForCurrentTrial = mode === 'test' && currentTestTrial
-    ? { duration: TEST_CONFIG.duration, ...currentTestTrial }
-    : settings;
 
+  const handleDownload = (format: 'csv' | 'json') => {
+    if(format === 'csv') exportToCsv(trialLog);
+    else exportToJson(trialLog);
+  }
+  
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col items-center justify-center p-4 font-sans">
       <div className="w-full max-w-6xl mx-auto">
@@ -302,7 +327,7 @@ const App: React.FC = () => {
                   setStageBSelection={setStageBSelection}
                   onStartStageB={startStageB}
                   stageBNoiseLevel={stageBNoiseLevel}
-                  onStartCustomStageB={startCustomStageB}
+                  onDownload={handleDownload}
                 />
             }
           </div>
@@ -320,9 +345,10 @@ const App: React.FC = () => {
             </div>
             <ExperimentCanvas 
               word={currentWord} 
-              settings={settingsForCurrentTrial} 
+              envelope={currentEnvelope}
               trialState={trialState}
               onComplete={onTrialComplete}
+              isDebug={isDebug}
             />
             
             <div className="w-full max-w-md mt-6 text-center">
@@ -356,8 +382,8 @@ const App: React.FC = () => {
               {mode === 'manual' && (
                 <>
                 <button 
-                  onClick={startManualTrial} 
-                  disabled={trialState === TrialState.Running || trialState === TrialState.AwaitingInput}
+                  onClick={() => prepareAndRunTrial({ ...DEFAULT_STIMULUS_CONFIG, ...settings, refreshRate })}
+                  disabled={trialState === TrialState.Running || trialState === TrialState.AwaitingInput || trialState === TrialState.PreTrial}
                   className="w-full mt-4 px-6 py-3 text-lg font-bold text-white bg-cyan-600 rounded-md hover:bg-cyan-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition duration-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800"
                 >
                   {trialState === TrialState.Idle || trialState === TrialState.Feedback ? 'Start Trial' : '...'}

@@ -6,6 +6,7 @@ export interface ExperimentSettings {
 
 export enum TrialState {
   Idle = 'idle',
+  PreTrial = 'pretrial', // New state for pre-calculating stimulus
   Running = 'running',
   AwaitingInput = 'awaiting_input',
   Feedback = 'feedback',
@@ -32,6 +33,8 @@ export interface Staircase {
   lastDirection: 'up' | 'down' | null;
   isComplete: boolean;
   noiseHistory: number[];
+  isPinned: boolean;
+  pinnedCount: number;
 }
 
 export interface TestResult {
@@ -45,4 +48,40 @@ export interface StageAResult {
   threshold: number;
   noiseMin: number;
   noiseMax: number;
+  wasPinned: boolean;
+}
+
+export interface Envelope {
+  values: number[]; // pre-computed noise values per frame
+  mean: number;
+  rms: number;
+  integral: number;
+  phase: number;
+}
+
+export interface StimulusConfig {
+  durationMs: number;
+  frequency: number;
+  refreshRate: number;
+  noiseLevel: number;
+  stimulusMode: 'singleSine' | 'multiSine';
+  randomizePhase: boolean;
+}
+
+export interface TrialLogEntry {
+  trialNumber: number;
+  stage: TestStatus;
+  word: string;
+  guess: string;
+  isCorrect: boolean;
+  rt: number | null;
+  // Stimulus params
+  frequency: number;
+  phase: number;
+  noiseBase: number;
+  envelopeMean: number;
+  envelopeRms: number;
+  envelopeIntegral: number;
+  frameCount: number;
+  detectedRefreshRate: number;
 }

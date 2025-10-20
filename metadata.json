@@ -1,5 +1,5 @@
 {
-  "name": "Visual Rhythm Experiment",
+  "name": "ADHD Random Temporal Sampling",
   "description": "A web-based demonstration of the 'random temporal sampling' experiment used in psychology studies to test visual processing rhythms, inspired by research on ADHD detection.",
   "requestFramePermissions": []
 }

@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { ExperimentSettings } from '../types';
+import { generateEnvelope } from '../lib/stimulus-logic';
+import { DEFAULT_STIMULUS_CONFIG } from '../constants';
 
 interface ControlsPanelProps {
   settings: ExperimentSettings;
@@ -35,25 +37,21 @@ const Slider: React.FC<{
 
 const ControlsPanel: React.FC<ControlsPanelProps> = ({ settings, onSettingsChange }) => {
 
-  const generateChartData = () => {
-    const data = [];
-    const duration = settings.duration;
-    const maxNoise = settings.noiseLevel;
-    // New non-linear relationship: min_noise = max_noise^2
-    // This makes the 'clear' phase much noisier at high settings.
-    const minNoise = maxNoise * maxNoise;
-    const noiseRange = maxNoise - minNoise;
+  const chartData = useMemo(() => {
+    const envelope = generateEnvelope({
+      ...DEFAULT_STIMULUS_CONFIG,
+      durationMs: settings.duration,
+      frequency: settings.frequency,
+      noiseLevel: settings.noiseLevel,
+      randomizePhase: false, // Keep phase consistent for visualization
+    });
 
-    for (let t = 0; t <= duration; t += 10) {
-      const radians = (t / 1000) * settings.frequency * 2 * Math.PI;
-      const clarityOscillation = (Math.sin(radians) + 1) / 2; // from 0 (peak noise) to 1 (peak clarity)
-      const noiseDensity = maxNoise - (clarityOscillation * noiseRange);
-      data.push({ time: t, noise: noiseDensity });
-    }
+    const data = envelope.values.map((noise, i) => ({
+        time: Math.round((i / DEFAULT_STIMULUS_CONFIG.refreshRate) * 1000),
+        noise: noise
+    }));
     return data;
-  };
-
-  const chartData = generateChartData();
+  }, [settings]);
 
   return (
     <div>
@@ -61,7 +59,7 @@ const ControlsPanel: React.FC<ControlsPanelProps> = ({ settings, onSettingsChang
       <Slider 
         label="Flash Duration"
         value={settings.duration}
-        min={20} max={500} step={10} unit="ms"
+        min={100} max={500} step={10} unit="ms"
         onChange={(val) => onSettingsChange({ ...settings, duration: val })}
       />
       <Slider 
@@ -83,11 +81,11 @@ const ControlsPanel: React.FC<ControlsPanelProps> = ({ settings, onSettingsChang
             <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
                     <XAxis dataKey="time" stroke="#9ca3af" tick={{ fontSize: 10 }} unit="ms" />
-                    <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} domain={[0, 1]} />
+                    <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} domain={[0.9, 1]} tickFormatter={(val) => `${Math.round(val*100)}%`} />
                     <Tooltip 
                         contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151' }} 
                         labelStyle={{ color: '#67e8f9' }}
-                        formatter={(value) => `${(Number(value) * 100).toFixed(0)}%`}
+                        formatter={(value) => `${(Number(value) * 100).toFixed(1)}%`}
                         labelFormatter={(label) => `Time: ${label}ms`}
                     />
                     <Line type="monotone" name="Noise Density" dataKey="noise" stroke="#22d3ee" strokeWidth={2} dot={false} />

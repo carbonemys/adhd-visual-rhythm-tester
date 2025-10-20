@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Label, ComposedChart, Area, Line } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Label, ComposedChart, Area, Line, ReferenceLine } from 'recharts';
+// FIX: Swapped TooltipProps for the correct type for a custom tooltip content component.
+import { NameType, ValueType, Props as TooltipContentProps } from 'recharts/types/component/DefaultTooltipContent';
 import { TestStatus, TestResult, StageAResult } from '../types';
 import { TEST_CONFIG } from '../constants';
 
 interface TestPanelProps {
   status: TestStatus;
   results: { stageA: StageAResult[], stageB: TestResult[] };
-  onStart: () => void;
+  onStart: (isStageBOnly?: boolean, customConfig?: {noise: number, frequencies: number[]}) => void;
   progress: { current: number; total: number } | null;
   stats: {
     stageA: { correct: number; total: number };
@@ -16,27 +18,31 @@ interface TestPanelProps {
   setStageBSelection: (selection: number[]) => void;
   onStartStageB: () => void;
   stageBNoiseLevel: number | null;
-  onStartCustomStageB: (noise: number, frequencies: number[]) => void;
+  onDownload: (format: 'csv' | 'json') => void;
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+// FIX: Corrected the type for the custom tooltip's props. `TooltipProps` from `recharts` is for the `<Tooltip />`
+// component itself. The props passed to a custom `content` component are defined in `TooltipContentProps` (aliased
+// from `Props` from `recharts/types/component/DefaultTooltipContent`), which resolves the type error.
+const CustomTooltip = ({ active, payload, label }: TooltipContentProps<ValueType, NameType>) => {
   if (active && payload && payload.length) {
     const data = payload[0].payload;
     const accuracy = data.accuracy !== undefined ? `${(data.accuracy * 100).toFixed(1)}%` : null;
     const threshold = data.threshold !== undefined ? `${(data.threshold * 100).toFixed(1)}%` : null;
 
     return (
-      <div className="bg-gray-800 p-2 border border-gray-600 rounded">
+      <div className="bg-gray-800 p-2 border border-gray-600 rounded text-sm">
         <p className="label text-cyan-400">{`Frequency: ${label} Hz`}</p>
         {accuracy && <p className="intro text-gray-200">{`Accuracy: ${accuracy}`}</p>}
         {threshold && <p className="intro text-gray-200">{`Threshold: ${threshold}`}</p>}
+        {data.wasPinned && <p className='text-yellow-400'>Staircase Pinned</p>}
       </div>
     );
   }
   return null;
 };
 
-const ResultsChart: React.FC<{data: TestResult[], title: string}> = ({ data, title }) => (
+const StageBChart: React.FC<{data: TestResult[], title: string}> = ({ data, title }) => (
     <div className="mb-6">
         <h3 className="text-lg font-semibold text-center text-gray-300 mb-2">{title}</h3>
         <div className="h-60 bg-gray-900 p-2 rounded-md">
@@ -57,28 +63,30 @@ const ResultsChart: React.FC<{data: TestResult[], title: string}> = ({ data, tit
     </div>
 );
 
-const NoiseDistributionChart: React.FC<{ data: StageAResult[] }> = ({ data }) => {
-    const chartData = [...data].sort((a, b) => a.frequency - b.frequency).map(d => ({
-        ...d,
-        range: [d.noiseMin, d.noiseMax]
-    }));
-
+const StageAChart: React.FC<{ data: StageAResult[] }> = ({ data }) => {
+    const chartData = [...data].sort((a, b) => a.frequency - b.frequency);
     return (
         <div className="mb-6">
-            <h3 className="text-lg font-semibold text-center text-gray-300 mb-2">Stage A: Noise Exploration</h3>
-            <div className="h-60 bg-gray-900 p-2 rounded-md">
+            <h3 className="text-lg font-semibold text-center text-gray-300 mb-2">Stage A: Noise Threshold</h3>
+             <div className="h-60 bg-gray-900 p-2 rounded-md">
                 <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart data={chartData} margin={{ top: 5, right: 5, left: -25, bottom: 20 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                         <XAxis dataKey="frequency" stroke="#9ca3af" tick={{ fontSize: 12 }} unit=" Hz">
                              <Label value="Frequency (Hz)" offset={-15} position="insideBottom" fill="#9ca3af" />
                         </XAxis>
-                        <YAxis stroke="#9ca3af" tick={{ fontSize: 12 }} domain={[0.9, 1]} tickFormatter={(val) => `${(val * 100).toFixed(1)}%`} allowDataOverflow>
+                        <YAxis stroke="#9ca3af" tick={{ fontSize: 12 }} domain={[TEST_CONFIG.noiseMin, TEST_CONFIG.noiseMax]} tickFormatter={(val) => `${(val * 100).toFixed(0)}%`} yAxisId="left">
                             <Label value="Noise Level" angle={-90} offset={10} position="insideLeft" style={{ textAnchor: 'middle', fill: '#9ca3af' }} />
                         </YAxis>
                         <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(249, 115, 22, 0.1)' }}/>
-                        <Area dataKey="range" fill="rgba(34, 211, 238, 0.2)" stroke="rgba(34, 211, 238, 0.4)" activeDot={false} />
-                        <Line type="monotone" dataKey="threshold" stroke="#f97316" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+                        <Area dataKey="range" fill="rgba(34, 211, 238, 0.2)" stroke="rgba(34, 211, 238, 0.4)" activeDot={false} yAxisId="left" />
+                        <Line type="monotone" dataKey="threshold" stroke="#f97316" strokeWidth={2} dot={(props) => {
+                            const { payload } = props;
+                            if (payload.wasPinned) {
+                                return <svg x={props.cx-5} y={props.cy-5} width="10" height="10" fill="#facc15" viewBox="0 0 1024 1024"><path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm-32 232c0-4.4 3.6-8 8-8h48c4.4 0 8 3.6 8 8v272c0 4.4-3.6 8-8 8h-48c-4.4 0-8-3.6-8-8V296zm32 440a48 48 0 100-96 48 48 0 100 96z"></path></svg>;
+                            }
+                            return <circle cx={props.cx} cy={props.cy} r={4} stroke="#f97316" fill="#f97316" />;
+                        }} activeDot={{ r: 6 }} yAxisId="left" />
                     </ComposedChart>
                 </ResponsiveContainer>
             </div>
@@ -120,7 +128,7 @@ const FrequencySelector: React.FC<{
     );
 }
 
-const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progress, stats, stageBSelection, setStageBSelection, onStartStageB, stageBNoiseLevel, onStartCustomStageB }) => {
+const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progress, stats, stageBSelection, setStageBSelection, onStartStageB, stageBNoiseLevel, onDownload }) => {
   
   const [isCustomSetup, setIsCustomSetup] = useState(false);
   const [customNoise, setCustomNoise] = useState(TEST_CONFIG.initialNoise);
@@ -142,7 +150,7 @@ const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progres
             <h2 className="text-2xl font-bold text-cyan-400 mb-4">Find Your Peak Visual Rhythm</h2>
             <p className="text-gray-300 mb-6">This automated test guides you through two stages to find your peak performance.</p>
             <button
-                onClick={onStart}
+                onClick={() => onStart(false)}
                 className="w-full px-8 py-4 text-xl font-bold text-white bg-cyan-600 rounded-md hover:bg-cyan-700 transition duration-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800"
             >
                 Start Full Test
@@ -175,7 +183,7 @@ const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progres
                     <FrequencySelector selected={customFrequencies} onToggle={handleCustomFrequencyToggle} limit={5} />
                     
                     <button
-                        onClick={() => onStartCustomStageB(customNoise, customFrequencies)}
+                        onClick={() => onStart(true, { noise: customNoise, frequencies: customFrequencies })}
                         disabled={customFrequencies.length !== 5}
                         className="w-full mt-6 px-8 py-3 text-lg font-bold text-white bg-cyan-600 rounded-md hover:bg-cyan-700 transition duration-200 disabled:bg-gray-600 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800"
                     >
@@ -217,13 +225,12 @@ const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progres
             <h2 className="text-2xl font-bold text-cyan-400 mb-2 text-center">Stage A Complete</h2>
              {stageBNoiseLevel && (
                 <div className="bg-gray-900 rounded-lg p-3 my-4 text-center">
-                    <p className="text-sm text-gray-400">Stage B Fixed Noise Level</p>
+                    <p className="text-sm text-gray-400">Stage B Fixed Noise Level (based on non-pinned results)</p>
                     <p className="text-3xl font-mono font-bold text-cyan-400">{(stageBNoiseLevel * 100).toFixed(1)}%</p>
                 </div>
             )}
             <p className="text-center text-gray-300 mb-4">Select 5 frequencies for the fine-tuning stage. We've suggested a starting set based on your results.</p>
-            <ResultsChart data={results.stageA} title="Stage A: Accuracy Results" />
-            <NoiseDistributionChart data={results.stageA} />
+            <StageAChart data={results.stageA} />
             <FrequencySelector selected={stageBSelection} onToggle={handleSelectionToggle} limit={5} />
             <button
                 onClick={onStartStageB}
@@ -254,11 +261,20 @@ const TestPanel: React.FC<TestPanelProps> = ({ status, results, onStart, progres
             <div>{ranStageA ? 'Stage B' : 'Overall'} Accuracy: <strong className="text-white">{stageBAccuracy}%</strong></div>
         </div>
 
-        {ranStageA && <ResultsChart data={stageAResults} title="Stage A: Coarse Tuning" />}
-        <ResultsChart data={stageBResults} title={ranStageA ? "Stage B: Fine Tuning" : "Custom Test Results"} />
+        {ranStageA && <StageAChart data={stageAResults} />}
+        <StageBChart data={stageBResults} title={ranStageA ? "Stage B: Fine Tuning Accuracy" : "Custom Test Results"} />
+        
+        <div className='mt-6 text-center'>
+            <p className='text-gray-300 mb-2 font-semibold'>Download Raw Data</p>
+            <div className='flex justify-center space-x-4'>
+                <button onClick={() => onDownload('csv')} className='px-4 py-2 text-sm bg-gray-600 hover:bg-gray-500 rounded'>CSV</button>
+                <button onClick={() => onDownload('json')} className='px-4 py-2 text-sm bg-gray-600 hover:bg-gray-500 rounded'>JSON</button>
+            </div>
+        </div>
+
         <button
-          onClick={onStart}
-          className="w-full mt-4 px-8 py-3 text-lg font-bold text-white bg-cyan-600 rounded-md hover:bg-cyan-700 transition duration-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800"
+          onClick={() => onStart(false)}
+          className="w-full mt-6 px-8 py-3 text-lg font-bold text-white bg-cyan-600 rounded-md hover:bg-cyan-700 transition duration-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-800"
         >
           Run Full Test Again
         </button>
